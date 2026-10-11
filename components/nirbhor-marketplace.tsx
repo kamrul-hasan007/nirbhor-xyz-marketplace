@@ -23,6 +23,7 @@ import {
   Zap,
 } from 'lucide-react'
 import type { MarketplaceCatalog, MarketplaceService } from '@/lib/catalog'
+import { AccountControls } from '@/components/auth/account-controls'
 
 type Language = 'en' | 'bn'
 
@@ -271,6 +272,7 @@ export function NirbhorMarketplace({ catalog }: { catalog: MarketplaceCatalog })
           <button className="language-switch" type="button" onClick={() => setLanguage(language === 'en' ? 'bn' : 'en')} aria-label={language === 'en' ? 'বাংলায় দেখুন' : 'View in English'}>
             <span className={language === 'en' ? 'language-switch__active' : ''}>EN</span><span className="language-switch__divider">/</span><span className={language === 'bn' ? 'language-switch__active' : ''}>বাং</span>
           </button>
+          <AccountControls />
           <a className="button button--small" href="#services">{text.bookNow}<ArrowRight aria-hidden="true" /></a>
           <button className="mobile-menu" type="button" aria-label={text.menu} onClick={() => document.getElementById('services')?.scrollIntoView({ behavior: 'smooth' })}><Menu aria-hidden="true" /></button>
         </div>
