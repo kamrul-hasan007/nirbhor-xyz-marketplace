@@ -1,7 +1,7 @@
 'use server'
 
 import { randomUUID } from 'node:crypto'
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { auth, type AccountRole } from '@/lib/auth'
@@ -16,6 +16,7 @@ import {
   customerProfiles,
   payments,
   payoutRequests,
+  marketplaceSettings,
   promoCodes,
   promoRedemptions,
   providerDocuments,
@@ -53,7 +54,7 @@ async function getActor(roles?: AccountRole[]) {
 }
 
 async function settingNumber(key: string, fallback: number, minimum: number, maximum: number) {
-  const [row] = await db.select({ value: sql`value` }).from(sql`marketplace_settings`).where(sql`key = ${key}`).limit(1)
+  const [row] = await db.select({ value: marketplaceSettings.value }).from(marketplaceSettings).where(eq(marketplaceSettings.key, key)).limit(1)
   const value = Number(row?.value)
   return Number.isFinite(value) && value >= minimum && value <= maximum ? value : fallback
 }
@@ -63,7 +64,7 @@ export async function createCustomerBooking(form: FormData) {
     const actor = await getActor(['customer'])
     const areaId = field(form, 'areaId')
     const serviceAddress = boundedText(field(form, 'serviceAddress'), 300)
-    const phone = boundedText(field(form, 'phone').replace(/[^+\\d]/g, ''), 20)
+    const phone = boundedText(field(form, 'phone').replace(/[^+\d]/g, ''), 20)
     const scheduledAt = new Date(field(form, 'scheduledAt'))
     const paymentMethod = field(form, 'paymentMethod')
     const promoCode = field(form, 'promoCode').toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 32)
@@ -77,7 +78,7 @@ export async function createCustomerBooking(form: FormData) {
     if (!Array.isArray(itemsInput) || itemsInput.length < 1 || itemsInput.length > 10) throw new Error('Add between 1 and 10 services to your booking.')
     if (!areaId || serviceAddress.length < 8) throw new Error('Choose a service area and enter a complete address.')
     if (!Number.isFinite(scheduledAt.getTime()) || scheduledAt.getTime() < Date.now() + 60 * 60 * 1000) throw new Error('Choose a service time at least one hour from now.')
-    if (!/^\\+?\\d{7,18}$/.test(phone)) throw new Error('Enter a valid phone number for payment and service updates.')
+    if (!/^\+?\d{7,18}$/.test(phone)) throw new Error('Enter a valid phone number for payment and service updates.')
     if (!['sslcommerz', 'cash_on_completion'].includes(paymentMethod)) throw new Error('Choose a valid payment method.')
     if ((latitude !== null && !Number.isFinite(latitude)) || (longitude !== null && !Number.isFinite(longitude))) throw new Error('The map coordinates are invalid.')
 
@@ -318,11 +319,11 @@ export async function saveProviderProfile(form: FormData) {
   try {
     const actor = await getActor(['provider'])
     const businessName = boundedText(field(form, 'businessName'), 100)
-    const phone = boundedText(field(form, 'phone').replace(/[^+\\d]/g, ''), 20)
+    const phone = boundedText(field(form, 'phone').replace(/[^+\d]/g, ''), 20)
     const bio = boundedText(field(form, 'bio'), 1000)
     const proposedCommission = Number(field(form, 'proposedCommissionPercent'))
     const areaIds = [...new Set(form.getAll('serviceAreaIds').map((value) => String(value)).filter(Boolean))].slice(0, 30)
-    if (businessName.length < 2 || !/^\\+?\\d{7,18}$/.test(phone)) throw new Error('Enter a business name and valid phone number.')
+    if (businessName.length < 2 || !/^\+?\d{7,18}$/.test(phone)) throw new Error('Enter a business name and valid phone number.')
     if (!Number.isFinite(proposedCommission) || proposedCommission < 0 || proposedCommission > 60) throw new Error('Propose a platform commission between 0% and 60%.')
     const validAreas = areaIds.length ? await db.select({ id: serviceAreas.id }).from(serviceAreas).where(and(inArray(serviceAreas.id, areaIds), eq(serviceAreas.isActive, true))) : []
     if (validAreas.length !== areaIds.length) throw new Error('One or more service areas are unavailable.')
@@ -348,6 +349,26 @@ export async function setProviderAvailability(availability: boolean) {
     return { ok: true as const }
   } catch (error) {
     return { ok: false as const, message: error instanceof Error ? error.message : 'Could not update availability.' }
+  }
+}
+
+export async function acceptMarketplaceBooking(bookingId: string) {
+  try {
+    const actor = await getActor(['provider'])
+    await db.transaction(async (tx) => {
+      const [profile] = await tx.select().from(providerProfiles).where(eq(providerProfiles.userId, actor.id)).limit(1)
+      if (!profile || profile.verificationStatus !== 'approved' || !profile.availability) throw new Error('An approved, available provider profile is required to accept jobs.')
+      const [booking] = await tx.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.status, 'requested'), isNull(bookings.providerUserId))).limit(1).for('update')
+      if (!booking) throw new Error('This job is no longer available.')
+      const [coverage] = await tx.select({ serviceAreaId: providerServiceAreas.serviceAreaId }).from(providerServiceAreas).where(and(eq(providerServiceAreas.providerUserId, actor.id), eq(providerServiceAreas.serviceAreaId, booking.areaId))).limit(1)
+      if (!coverage) throw new Error('This job is outside your approved service areas.')
+      await tx.update(bookings).set({ providerUserId: actor.id, status: 'provider_accepted', updatedAt: new Date() }).where(eq(bookings.id, bookingId))
+      await tx.insert(bookingEvents).values({ id: id(), bookingId, actorUserId: actor.id, status: 'provider_accepted', note: 'Provider accepted the job.' })
+    })
+    revalidateWorkspaces()
+    return { ok: true as const }
+  } catch (error) {
+    return { ok: false as const, message: error instanceof Error ? error.message : 'Could not accept this job.' }
   }
 }
 
@@ -503,6 +524,50 @@ export async function moderateMarketplaceReview(reviewId: string, moderationStat
     return { ok: true as const }
   } catch (error) {
     return { ok: false as const, message: error instanceof Error ? error.message : 'Could not update the review.' }
+  }
+}
+
+export async function updateMarketplacePackagePrice(packageId: string, priceBdt: number) {
+  try {
+    await getActor(['admin'])
+    if (!packageId || !Number.isSafeInteger(priceBdt) || priceBdt < 50 || priceBdt > 1_000_000) throw new Error('Set a package price between ৳50 and ৳1,000,000.')
+    const [servicePackage] = await db.select({ serviceId: servicePackages.serviceId }).from(servicePackages).where(eq(servicePackages.id, packageId)).limit(1)
+    if (!servicePackage) throw new Error('Service package not found.')
+    await db.transaction(async (tx) => {
+      await tx.update(servicePackages).set({ price: priceBdt }).where(eq(servicePackages.id, packageId))
+      const [lowest] = await tx.select({ price: sql<number>`min(${servicePackages.price})` }).from(servicePackages).where(and(eq(servicePackages.serviceId, servicePackage.serviceId), eq(servicePackages.isActive, true)))
+      if (lowest?.price !== null && lowest?.price !== undefined) await tx.update(services).set({ startingPrice: Number(lowest.price) }).where(eq(services.id, servicePackage.serviceId))
+    })
+    revalidatePath('/')
+    revalidateWorkspaces()
+    return { ok: true as const }
+  } catch (error) {
+    return { ok: false as const, message: error instanceof Error ? error.message : 'Could not update this package price.' }
+  }
+}
+
+export async function saveMarketplaceSettings(form: FormData) {
+  try {
+    await getActor(['admin'])
+    const settings = [
+      { key: 'advance_percent', minimum: 1, maximum: 100 },
+      { key: 'free_cancellation_hours', minimum: 0, maximum: 168 },
+      { key: 'cancellation_fee_percent', minimum: 0, maximum: 100 },
+    ]
+    const values = settings.map(({ key, minimum, maximum }) => {
+      const value = Number(field(form, key))
+      if (!Number.isFinite(value) || value < minimum || value > maximum) throw new Error(`Enter a valid value for ${key.replaceAll('_', ' ')}.`)
+      return { key, value: String(value) }
+    })
+    await db.transaction(async (tx) => {
+      for (const setting of values) {
+        await tx.insert(marketplaceSettings).values({ ...setting, updatedAt: new Date() }).onConflictDoUpdate({ target: marketplaceSettings.key, set: { value: setting.value, updatedAt: new Date() } })
+      }
+    })
+    revalidateWorkspaces()
+    return { ok: true as const }
+  } catch (error) {
+    return { ok: false as const, message: error instanceof Error ? error.message : 'Could not save marketplace settings.' }
   }
 }
 

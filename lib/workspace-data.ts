@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import {
   bookingEvents,
@@ -7,8 +7,10 @@ import {
   cities,
   complaints,
   customerAddresses,
+  customerProfiles,
   payments,
   payoutRequests,
+  marketplaceSettings,
   providerDocuments,
   providerLedger,
   providerProfiles,
@@ -22,7 +24,7 @@ import {
 } from '@/lib/db/schema'
 
 export async function getCustomerWorkspaceData(userId: string) {
-  const [areaRows, cityRows, serviceRows, packageRows, coverageRows, bookingRows, addressRows, paymentRows, complaintRows, reviewRows] = await Promise.all([
+  const [areaRows, cityRows, serviceRows, packageRows, coverageRows, bookingRows, addressRows, paymentRows, complaintRows, reviewRows, profileRows] = await Promise.all([
     db.select({ id: serviceAreas.id, name: serviceAreas.name, nameBn: serviceAreas.nameBn, cityId: serviceAreas.cityId }).from(serviceAreas).where(eq(serviceAreas.isActive, true)).orderBy(asc(serviceAreas.name)),
     db.select({ id: cities.id, name: cities.name }).from(cities).where(eq(cities.isActive, true)),
     db.select({ id: services.id, name: services.name, nameBn: services.nameBn, categoryId: services.categoryId, startingPrice: services.startingPrice }).from(services).where(eq(services.isActive, true)).orderBy(asc(services.name)),
@@ -33,6 +35,7 @@ export async function getCustomerWorkspaceData(userId: string) {
     db.select({ id: payments.id, bookingId: payments.bookingId, amountBdt: payments.amountBdt, paymentMethod: payments.paymentMethod, status: payments.status, gatewayStatus: payments.gatewayStatus, createdAt: payments.createdAt }).from(payments).where(eq(payments.userId, userId)).orderBy(desc(payments.createdAt)).limit(100),
     db.select().from(complaints).where(eq(complaints.customerUserId, userId)).orderBy(desc(complaints.createdAt)).limit(50),
     db.select({ id: reviews.id, bookingId: reviews.bookingId, rating: reviews.rating, message: reviews.message, moderationStatus: reviews.moderationStatus, createdAt: reviews.createdAt }).from(reviews).where(eq(reviews.customerUserId, userId)).orderBy(desc(reviews.createdAt)).limit(50),
+    db.select({ phone: customerProfiles.phone, referralCode: customerProfiles.referralCode, creditBalanceBdt: customerProfiles.creditBalanceBdt }).from(customerProfiles).where(eq(customerProfiles.userId, userId)).limit(1),
   ])
 
   const bookingIds = bookingRows.map((booking) => booking.id)
@@ -73,6 +76,7 @@ export async function getCustomerWorkspaceData(userId: string) {
     payments: paymentRows,
     complaints: complaintRows,
     reviews: reviewRows,
+    profile: profileRows[0] ?? null,
   }
 }
 
@@ -86,13 +90,16 @@ export async function getProviderWorkspaceData(userId: string) {
     db.select({ id: serviceAreas.id, cityId: serviceAreas.cityId, name: serviceAreas.name, cityName: cities.name }).from(serviceAreas).innerJoin(cities, eq(serviceAreas.cityId, cities.id)).where(and(eq(serviceAreas.isActive, true), eq(cities.isActive, true))).orderBy(asc(cities.name), asc(serviceAreas.name)),
     db.select().from(providerServiceAreas).where(eq(providerServiceAreas.providerUserId, userId)),
   ])
-  const bookingIds = bookingRows.map((booking) => booking.id)
-  const [itemRows, eventRows] = bookingIds.length
+  const availableRows = profileRows[0]?.verificationStatus === 'approved' && profileRows[0].availability && coverageRows.length
+    ? await db.select({ booking: bookings, customerName: authUser.name }).from(bookings).innerJoin(authUser, eq(bookings.customerUserId, authUser.id)).where(and(eq(bookings.status, 'requested'), isNull(bookings.providerUserId), inArray(bookings.areaId, coverageRows.map((row) => row.serviceAreaId)))).orderBy(asc(bookings.scheduledAt)).limit(30)
+    : []
+  const bookingIds = [...bookingRows.map((booking) => booking.id), ...availableRows.map((row) => row.booking.id)]
+  const [itemRows, eventRows] = bookingRows.length
     ? await Promise.all([
-        db.select().from(bookingItems).where(inArray(bookingItems.bookingId, bookingIds)),
-        db.select().from(bookingEvents).where(inArray(bookingEvents.bookingId, bookingIds)).orderBy(asc(bookingEvents.createdAt)),
+        bookingIds.length ? db.select().from(bookingItems).where(inArray(bookingItems.bookingId, bookingIds)) : Promise.resolve([]),
+        db.select().from(bookingEvents).where(inArray(bookingEvents.bookingId, bookingRows.map((booking) => booking.id))).orderBy(asc(bookingEvents.createdAt)),
       ])
-    : [[], []]
+    : [availableRows.length ? await db.select().from(bookingItems).where(inArray(bookingItems.bookingId, bookingIds)) : [], []]
 
   return {
     profile: profileRows[0] ?? null,
@@ -106,11 +113,16 @@ export async function getProviderWorkspaceData(userId: string) {
       items: itemRows.filter((item) => item.bookingId === booking.id),
       events: eventRows.filter((event) => event.bookingId === booking.id),
     })),
+    availableBookings: availableRows.map(({ booking, customerName }) => ({
+      ...booking,
+      customerName,
+      items: itemRows.filter((item) => item.bookingId === booking.id),
+    })),
   }
 }
 
 export async function getAdminWorkspaceData() {
-  const [bookingRows, providerRows, complaintRows, documentRows, payoutRows, reviewRows, areaRows, providerCoverageRows] = await Promise.all([
+  const [bookingRows, providerRows, complaintRows, documentRows, payoutRows, reviewRows, areaRows, providerCoverageRows, packageRows, settingRows] = await Promise.all([
     db.select({ booking: bookings, customerName: authUser.name, customerEmail: authUser.email }).from(bookings).innerJoin(authUser, eq(bookings.customerUserId, authUser.id)).orderBy(desc(bookings.createdAt)).limit(100),
     db.select({ userId: authUser.id, name: authUser.name, email: authUser.email, profile: providerProfiles }).from(authUser).leftJoin(providerProfiles, eq(authUser.id, providerProfiles.userId)).where(eq(authUser.role, 'provider')).orderBy(desc(authUser.createdAt)).limit(100),
     db.select({ complaint: complaints, customerName: authUser.name, customerEmail: authUser.email }).from(complaints).innerJoin(authUser, eq(complaints.customerUserId, authUser.id)).orderBy(desc(complaints.createdAt)).limit(100),
@@ -119,6 +131,8 @@ export async function getAdminWorkspaceData() {
     db.select({ review: reviews, customerName: authUser.name }).from(reviews).innerJoin(authUser, eq(reviews.customerUserId, authUser.id)).orderBy(desc(reviews.createdAt)).limit(100),
     db.select({ id: serviceAreas.id, name: serviceAreas.name, cityName: cities.name }).from(serviceAreas).innerJoin(cities, eq(serviceAreas.cityId, cities.id)).where(and(eq(serviceAreas.isActive, true), eq(cities.isActive, true))).orderBy(asc(cities.name), asc(serviceAreas.name)),
     db.select().from(providerServiceAreas),
+    db.select({ id: servicePackages.id, serviceId: servicePackages.serviceId, name: servicePackages.name, price: servicePackages.price, durationMinutes: servicePackages.durationMinutes, serviceName: services.name, isActive: servicePackages.isActive }).from(servicePackages).innerJoin(services, eq(servicePackages.serviceId, services.id)).orderBy(asc(services.name), asc(servicePackages.price)),
+    db.select({ key: marketplaceSettings.key, value: marketplaceSettings.value }).from(marketplaceSettings),
   ])
   const bookingIds = bookingRows.map((row) => row.booking.id)
   const itemRows = bookingIds.length
@@ -140,6 +154,8 @@ export async function getAdminWorkspaceData() {
     payouts: payoutRows,
     reviews: reviewRows,
     areas: areaRows,
+    packages: packageRows,
+    settings: Object.fromEntries(settingRows.map((setting) => [setting.key, setting.value])),
   }
 }
 
