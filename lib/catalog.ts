@@ -5,11 +5,12 @@ import {
   serviceAreas,
   serviceAreaServices,
   serviceCategories,
+  servicePackages,
   services,
 } from '@/lib/db/schema'
 
 export async function getMarketplaceCatalog() {
-  const [cityRows, areaRows, categoryRows, serviceRows, coverageRows] =
+  const [cityRows, areaRows, categoryRows, serviceRows, coverageRows, packageRows] =
     await Promise.all([
       db.select().from(cities).where(eq(cities.isActive, true)).orderBy(asc(cities.name)),
       db
@@ -39,9 +40,26 @@ export async function getMarketplaceCatalog() {
         .from(services)
         .where(eq(services.isActive, true)),
       db.select().from(serviceAreaServices),
+      db
+        .select({
+          id: servicePackages.id,
+          serviceId: servicePackages.serviceId,
+          name: servicePackages.name,
+          nameBn: servicePackages.nameBn,
+          price: servicePackages.price,
+          durationMinutes: servicePackages.durationMinutes,
+        })
+        .from(servicePackages)
+        .where(eq(servicePackages.isActive, true)),
     ])
 
   const serviceAreaIds = new Map<string, string[]>()
+  const packagesByService = new Map<string, typeof packageRows>()
+  for (const servicePackage of packageRows) {
+    const packages = packagesByService.get(servicePackage.serviceId) ?? []
+    packages.push(servicePackage)
+    packagesByService.set(servicePackage.serviceId, packages)
+  }
   for (const row of coverageRows) {
     const areaIds = serviceAreaIds.get(row.serviceId) ?? []
     areaIds.push(row.serviceAreaId)
@@ -56,6 +74,7 @@ export async function getMarketplaceCatalog() {
       ...service,
       rating: Number(service.rating),
       areaIds: serviceAreaIds.get(service.id) ?? [],
+      packages: packagesByService.get(service.id) ?? [],
     })),
   }
 }
