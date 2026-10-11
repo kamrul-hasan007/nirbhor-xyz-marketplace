@@ -14,6 +14,7 @@ import {
   providerProfiles,
   providerServiceAreas,
   reviews,
+  serviceAreaServices,
   serviceAreas,
   servicePackages,
   services,
