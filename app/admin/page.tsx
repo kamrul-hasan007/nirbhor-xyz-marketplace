@@ -1,7 +1,10 @@
-import { RoleDashboard } from '@/components/auth/role-dashboard'
+import { WorkspaceDashboard } from '@/components/auth/workspace-dashboard'
 import { requireRole } from '@/lib/auth'
+import { getAdminWorkspaceData } from '@/lib/workspace-data'
 
 export default async function AdminPage() {
   const session = await requireRole('admin')
-  return <RoleDashboard role="admin" name={session.user.name} email={session.user.email} />
+  const data = await getAdminWorkspaceData()
+
+  return <WorkspaceDashboard role="admin" name={session.user.name} email={session.user.email} data={data} />
 }

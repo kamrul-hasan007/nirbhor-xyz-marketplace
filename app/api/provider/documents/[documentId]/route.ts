@@ -10,7 +10,7 @@ type RouteProps = { params: Promise<{ documentId: string }> }
 
 export async function GET(request: Request, { params }: RouteProps) {
   const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user || !['provider', 'admin'].includes(session.user.role)) {
+  if (!session?.user || typeof session.user.role !== 'string' || !['provider', 'admin'].includes(session.user.role)) {
     return NextResponse.json({ error: 'Sign in with a provider or admin account.' }, { status: 403 })
   }
 
@@ -20,7 +20,7 @@ export async function GET(request: Request, { params }: RouteProps) {
     .from(providerDocuments)
     .where(eq(providerDocuments.id, documentId))
     .limit(1)
-  if (!document || (session.user.role !== 'admin' && document.userId !== session.user.id)) {
+  if (!document || !document.blobPathname || (session.user.role !== 'admin' && document.userId !== session.user.id)) {
     return NextResponse.json({ error: 'Document not found.' }, { status: 404 })
   }
 

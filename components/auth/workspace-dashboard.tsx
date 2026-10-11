@@ -3,12 +3,11 @@
 import { useState, useTransition, type FormEvent, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowRight, BadgeCheck, BriefcaseBusiness, House, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
+import { ArrowRight, BadgeCheck, House, ShieldCheck, Wrench } from 'lucide-react'
 import { AccountControls } from '@/components/auth/account-controls'
 import {
   acceptMarketplaceBooking,
   assignMarketplaceBooking,
-  beginSslCommerzCheckout,
   cancelCustomerBooking,
   createCustomerBooking,
   moderateMarketplaceReview,
@@ -62,7 +61,7 @@ export function WorkspaceDashboard(props: WorkspaceProps) {
       setNotice('')
       try {
         const result = await operation()
-        setNotice(result.message ?? (result.ok ? 'Saved.' : 'The change could not be saved.'))
+        setNotice(result.message ?? (result.feeBdt !== undefined ? `Booking cancelled. Cancellation fee: ${taka(result.feeBdt)}.` : result.ok ? 'Saved.' : 'The change could not be saved.'))
         if (result.ok) router.refresh()
         if (result.gatewayUrl) {
           if (window.self !== window.top) window.open(result.gatewayUrl, '_blank', 'noopener,noreferrer')
@@ -142,7 +141,11 @@ function CustomerWorkspace({ data, cart, setCart, perform, submitForm }: {
         <form className="workspace-form workspace-booking-form" onSubmit={(event) => {
           const form = new FormData(event.currentTarget)
           form.set('items', JSON.stringify(cart))
-          submitForm(event, async () => createCustomerBooking(form))
+          submitForm(event, async () => {
+            const result = await createCustomerBooking(form)
+            if (result.ok) setCart([])
+            return result
+          })
         }}>
           <label className="workspace-field"><span>Neighbourhood</span><select name="areaId" required defaultValue={data.addresses[0]?.areaId ?? ''}><option value="" disabled>Choose your area</option>{data.areas.map((area) => <option key={area.id} value={area.id}>{area.cityName} · {area.name}</option>)}</select></label>
           <label className="workspace-field"><span>Service address</span><input name="serviceAddress" minLength={8} maxLength={300} required defaultValue={data.addresses[0]?.streetAddress ?? ''} placeholder="House, road and neighbourhood" /></label>
@@ -180,11 +183,16 @@ function CustomerWorkspace({ data, cart, setCart, perform, submitForm }: {
           {booking.status === 'completed' && <button type="button" className="workspace-text-button" onClick={() => window.print()}>Print receipt</button>}
           {booking.status === 'completed' && <button type="button" className="workspace-text-button workspace-text-button--danger" onClick={() => {
             const details = window.prompt('Describe the issue (at least 10 characters)') ?? ''
-            if (details.trim().length >= 10) perform(() => submitCustomerComplaint(booking.id, 'service_quality', details, 0))
-          }}>Get support</button>}
+            if (details.trim().length < 10) return
+            const refundInput = window.prompt('Refund amount in BDT (enter 0 if you are not requesting a refund)', '0')
+            if (refundInput === null) return
+            const refundRequestedBdt = Number(refundInput)
+            if (Number.isSafeInteger(refundRequestedBdt) && refundRequestedBdt >= 0) perform(() => submitCustomerComplaint(booking.id, 'service_quality', details, refundRequestedBdt))
+            else window.alert('Enter a whole-number refund amount in BDT.')
+          }}>Get support / request refund</button>}
         </div>
       </article>)}</div>}
-      {data.complaints.length > 0 && <div className="workspace-subsection"><h3>Support requests</h3>{data.complaints.map(({ complaint }) => <p key={complaint.id}>#{complaint.id.slice(0, 8)} · {complaint.category} · {statusLabel(complaint.status)}{complaint.resolutionNote ? ` · ${complaint.resolutionNote}` : ''}</p>)}</div>}
+      {data.complaints.length > 0 && <div className="workspace-subsection"><h3>Support requests</h3>{data.complaints.map((complaint) => <p key={complaint.id}>#{complaint.id.slice(0, 8)} · {complaint.category} · {statusLabel(complaint.status)}{complaint.resolutionNote ? ` · ${complaint.resolutionNote}` : ''}</p>)}</div>}
     </Panel>
 
     <Panel title="Saved addresses" description="Your latest booking address is available for your next visit.">
